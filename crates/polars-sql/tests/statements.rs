@@ -593,3 +593,154 @@ fn test_compound_invalid_2() {
     let sql = "SELECT * FROM df1 INNER JOIN df2 ON df1.a = df2.a AND b";
     let _ = ctx.execute(sql).unwrap();
 }
+
+#[test]
+fn test_implicit_join_basic() {
+    let df1 = df! {
+        "id" => [1, 2, 3],
+        "name" => ["Alice", "Bob", "Charlie"],
+    }
+    .unwrap();
+    let df2 = df! {
+        "id" => [1, 2, 3],
+        "age" => [25, 30, 35],
+    }
+    .unwrap();
+
+    let mut ctx = SQLContext::new();
+    ctx.register("df1", df1.lazy());
+    ctx.register("df2", df2.lazy());
+
+    // Implicit join with WHERE condition
+    let sql = r#"
+        SELECT df1.name, df2.age
+        FROM df1, df2
+        WHERE df1.id = df2.id
+    "#;
+    let actual = ctx.execute(sql).unwrap().collect().unwrap();
+
+    let expected = df! {
+        "name" => ["Alice", "Bob", "Charlie"],
+        "age" => [25, 30, 35],
+    }
+    .unwrap();
+
+    assert!(
+        actual.equals(&expected),
+        "expected = {expected:?}\nactual={actual:?}"
+    );
+}
+
+#[test]
+fn test_implicit_join_cross() {
+    let df1 = df! {
+        "a" => [1, 2],
+    }
+    .unwrap();
+    let df2 = df! {
+        "b" => [10, 20],
+    }
+    .unwrap();
+
+    let mut ctx = SQLContext::new();
+    ctx.register("df1", df1.lazy());
+    ctx.register("df2", df2.lazy());
+
+    // Implicit cross join (no WHERE condition)
+    let sql = r#"
+        SELECT df1.a, df2.b
+        FROM df1, df2
+    "#;
+    let actual = ctx.execute(sql).unwrap().collect().unwrap();
+
+    let expected = df! {
+        "a" => [1, 1, 2, 2],
+        "b" => [10, 20, 10, 20],
+    }
+    .unwrap();
+
+    assert!(
+        actual.equals(&expected),
+        "expected = {expected:?}\nactual={actual:?}"
+    );
+}
+
+#[test]
+fn test_implicit_join_with_filter() {
+    let df1 = df! {
+        "id" => [1, 2, 3, 4],
+        "name" => ["Alice", "Bob", "Charlie", "David"],
+    }
+    .unwrap();
+    let df2 = df! {
+        "id" => [1, 2, 3, 4],
+        "age" => [25, 30, 35, 40],
+    }
+    .unwrap();
+
+    let mut ctx = SQLContext::new();
+    ctx.register("df1", df1.lazy());
+    ctx.register("df2", df2.lazy());
+
+    // Implicit join with WHERE condition and additional filter
+    let sql = r#"
+        SELECT df1.name, df2.age
+        FROM df1, df2
+        WHERE df1.id = df2.id AND df2.age > 30
+    "#;
+    let actual = ctx.execute(sql).unwrap().collect().unwrap();
+
+    let expected = df! {
+        "name" => ["Charlie", "David"],
+        "age" => [35, 40],
+    }
+    .unwrap();
+
+    assert!(
+        actual.equals(&expected),
+        "expected = {expected:?}\nactual={actual:?}"
+    );
+}
+
+#[test]
+fn test_implicit_join_three_tables() {
+    let df1 = df! {
+        "id" => [1, 2, 3],
+        "name" => ["Alice", "Bob", "Charlie"],
+    }
+    .unwrap();
+    let df2 = df! {
+        "id" => [1, 2, 3],
+        "dept_id" => [10, 20, 30],
+    }
+    .unwrap();
+    let df3 = df! {
+        "dept_id" => [10, 20, 30],
+        "dept_name" => ["Engineering", "Sales", "Marketing"],
+    }
+    .unwrap();
+
+    let mut ctx = SQLContext::new();
+    ctx.register("df1", df1.lazy());
+    ctx.register("df2", df2.lazy());
+    ctx.register("df3", df3.lazy());
+
+    // Implicit join with three tables
+    let sql = r#"
+        SELECT df1.name, df3.dept_name
+        FROM df1, df2, df3
+        WHERE df1.id = df2.id AND df2.dept_id = df3.dept_id
+    "#;
+    let actual = ctx.execute(sql).unwrap().collect().unwrap();
+
+    let expected = df! {
+        "name" => ["Alice", "Bob", "Charlie"],
+        "dept_name" => ["Engineering", "Sales", "Marketing"],
+    }
+    .unwrap();
+
+    assert!(
+        actual.equals(&expected),
+        "expected = {expected:?}\nactual={actual:?}"
+    );
+}

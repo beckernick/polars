@@ -1021,6 +1021,109 @@ impl SQLContext {
         Ok(lf)
     }
 
+    /// Execute implicit joins for multiple tables in FROM clause.
+    /// Returns the joined LazyFrame, base table name, and remaining WHERE conditions.
+    fn execute_implicit_joins(
+        &mut self,
+        from: &[TableWithJoins],
+        where_expr: &Option<SQLExpr>,
+    ) -> PolarsResult<(LazyFrame, Option<String>, Option<SQLExpr>)> {
+        if from.is_empty() {
+            polars_bail!(SQLInterface: "FROM clause cannot be empty");
+        }
+
+        // Process first table
+        let first_tbl = &from[0];
+        let (l_name, mut lf) = self.get_table(&first_tbl.relation)?;
+        let base_name = get_table_name(&first_tbl.relation).or_else(|| Some(l_name.clone()));
+        
+        // Ensure first table has explicit joins processed if any
+        if !first_tbl.joins.is_empty() {
+            lf = self.execute_from_statement(first_tbl)?;
+        }
+
+        let mut current_schema = self.get_frame_schema(&mut lf)?;
+        let mut remaining_where = where_expr.clone();
+        let mut current_table_name = l_name.clone();
+
+        // Process remaining tables
+        for tbl_expr in from.iter().skip(1) {
+            let (r_name, mut rf) = self.get_table(&tbl_expr.relation)?;
+            if r_name.is_empty() {
+                polars_bail!(
+                    SQLInterface:
+                    "cannot perform implicit JOIN on unnamed relation; please provide an alias"
+                );
+            }
+
+            // Ensure this table has explicit joins processed if any
+            if !tbl_expr.joins.is_empty() {
+                rf = self.execute_from_statement(tbl_expr)?;
+            }
+
+            let right_schema = self.get_frame_schema(&mut rf)?;
+
+            // Try to extract join conditions from WHERE clause
+            let left_info = TableInfo {
+                frame: lf.clone(),
+                name: (&current_table_name).into(),
+                schema: current_schema.clone(),
+            };
+            let right_info = TableInfo {
+                frame: rf.clone(),
+                name: (&r_name).into(),
+                schema: right_schema.clone(),
+            };
+
+            // Extract join conditions from WHERE clause
+            let (left_on, right_on, new_remaining_where) = 
+                extract_join_conditions_from_where(remaining_where.as_ref(), &left_info, &right_info, self)?;
+
+            remaining_where = new_remaining_where;
+
+            // Perform the join
+            if !left_on.is_empty() && !right_on.is_empty() {
+                // Inner join with conditions
+                lf = lf
+                    .join_builder()
+                    .with(rf)
+                    .left_on(left_on)
+                    .right_on(right_on)
+                    .how(JoinType::Inner)
+                    .suffix(format_pl_smallstr!(":{}", r_name))
+                    .coalesce(JoinCoalesce::KeepColumns)
+                    .finish();
+            } else {
+                // Cross join (no conditions found)
+                lf = lf.cross_join(rf, Some(format_pl_smallstr!(":{}", r_name)));
+            }
+
+            // Track joined aliases
+            let joined_schema = self.get_frame_schema(&mut lf)?;
+            self.joined_aliases.insert(
+                r_name.clone(),
+                right_schema
+                    .iter_names()
+                    .filter_map(|name| {
+                        let aliased_name = format!("{name}:{r_name}");
+                        if current_schema.contains(name)
+                            && joined_schema.contains(aliased_name.as_str())
+                        {
+                            Some((name.to_string(), aliased_name))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<PlHashMap<String, String>>(),
+            );
+
+            current_schema = joined_schema;
+            current_table_name = format!("{}:{}", current_table_name, r_name);
+        }
+
+        Ok((lf, base_name, remaining_where))
+    }
+
     /// Check that the SELECT statement only contains supported clauses.
     fn validate_select(&self, select_stmt: &Select) -> PolarsResult<()> {
         // Destructure "Select" exhaustively; that way if/when new fields are added in
@@ -1118,19 +1221,21 @@ impl SQLContext {
         self.register_named_windows(&select_stmt.named_window)?;
 
         // Get `FROM` table/data
-        let (mut lf, base_table_name) = if select_stmt.from.is_empty() {
-            (DataFrame::empty().lazy(), None)
+        let (mut lf, base_table_name, remaining_where) = if select_stmt.from.is_empty() {
+            (DataFrame::empty().lazy(), None, select_stmt.selection.clone())
         } else {
-            // Note: implicit joins need more work to support properly,
-            // explicit joins are preferred for now (ref: #16662)
             let from = select_stmt.clone().from;
-            if from.len() > 1 {
-                polars_bail!(SQLInterface: "multiple tables in FROM clause are not currently supported (found {}); use explicit JOIN syntax instead", from.len())
+            if from.len() == 1 {
+                // Single table - process as before
+                let tbl_expr = from.first().unwrap();
+                let lf = self.execute_from_statement(tbl_expr)?;
+                let base_name = get_table_name(&tbl_expr.relation);
+                (lf, base_name, select_stmt.selection.clone())
+            } else {
+                // Multiple tables - process as implicit joins
+                let (lf, base_name, remaining_where) = self.execute_implicit_joins(&from, &select_stmt.selection)?;
+                (lf, base_name, remaining_where)
             }
-            let tbl_expr = from.first().unwrap();
-            let lf = self.execute_from_statement(tbl_expr)?;
-            let base_name = get_table_name(&tbl_expr.relation);
-            (lf, base_name)
         };
 
         // Check for ambiguous column references in SELECT and WHERE (if there were joins)
@@ -1164,9 +1269,9 @@ impl SQLContext {
             }
         }
 
-        // Apply `WHERE` constraint
+        // Apply `WHERE` constraint (excluding join conditions that were already used)
         let mut schema = self.get_frame_schema(&mut lf)?;
-        lf = self.process_where(lf, &select_stmt.selection, false, Some(schema.clone()))?;
+        lf = self.process_where(lf, &remaining_where, false, Some(schema.clone()))?;
 
         // Determine projections
         let mut select_modifiers = SelectModifiers {
@@ -2689,6 +2794,155 @@ fn process_join_on(
         _ => polars_bail!(
             SQLInterface: "only equi-join constraints are currently supported; found expression = {:?}", sql_expr
         ),
+    }
+}
+
+/// Extract join conditions from WHERE clause for implicit joins.
+/// Returns join conditions (left_on, right_on) and remaining WHERE expression.
+fn extract_join_conditions_from_where(
+    where_expr: Option<&SQLExpr>,
+    tbl_left: &TableInfo,
+    tbl_right: &TableInfo,
+    ctx: &mut SQLContext,
+) -> PolarsResult<(Vec<Expr>, Vec<Expr>, Option<SQLExpr>)> {
+    let Some(where_expr) = where_expr else {
+        return Ok((vec![], vec![], None));
+    };
+
+    // Build a unified schema for checking column references
+    let mut join_schema = Schema::with_capacity(tbl_left.schema.len() + tbl_right.schema.len());
+    for (name, dtype) in tbl_left.schema.iter() {
+        join_schema.insert_at_index(join_schema.len(), name.clone(), dtype.clone())?;
+    }
+    for (name, dtype) in tbl_right.schema.iter() {
+        if !join_schema.contains(name) {
+            join_schema.insert_at_index(
+                join_schema.len(),
+                name.clone(),
+                dtype.clone(),
+            )?;
+        }
+    }
+
+    // Extract join conditions from WHERE clause
+    let (join_conditions, remaining_parts) = 
+        extract_join_conditions_recursive(where_expr, tbl_left, tbl_right, &join_schema, ctx)?;
+
+    // Reconstruct remaining WHERE expression from remaining parts
+    let remaining_where = if remaining_parts.is_empty() {
+        None
+    } else if remaining_parts.len() == 1 {
+        Some(remaining_parts[0].clone())
+    } else {
+        // Combine remaining parts with AND
+        let mut result = remaining_parts[0].clone();
+        for part in remaining_parts.iter().skip(1) {
+            result = SQLExpr::BinaryOp {
+                left: Box::new(result),
+                op: BinaryOperator::And,
+                right: Box::new(part.clone()),
+            };
+        }
+        Some(result)
+    };
+
+    if join_conditions.is_empty() {
+        Ok((vec![], vec![], remaining_where))
+    } else {
+        // Combine join conditions
+        let (left_on, right_on) = join_conditions.into_iter().unzip();
+        Ok((left_on, right_on, remaining_where))
+    }
+}
+
+/// Recursively extract join conditions from a WHERE expression.
+/// Returns (join_conditions, remaining_where_parts).
+fn extract_join_conditions_recursive(
+    expr: &SQLExpr,
+    tbl_left: &TableInfo,
+    tbl_right: &TableInfo,
+    join_schema: &Schema,
+    ctx: &mut SQLContext,
+) -> PolarsResult<(Vec<(Expr, Expr)>, Vec<SQLExpr>)> {
+    match expr {
+        SQLExpr::BinaryOp { left, op, right } => match op {
+            BinaryOperator::And => {
+                // Recursively process both sides
+                let (mut left_joins, mut left_remaining) = 
+                    extract_join_conditions_recursive(left, tbl_left, tbl_right, join_schema, ctx)?;
+                let (mut right_joins, mut right_remaining) = 
+                    extract_join_conditions_recursive(right, tbl_left, tbl_right, join_schema, ctx)?;
+                
+                left_joins.append(&mut right_joins);
+                left_remaining.append(&mut right_remaining);
+                Ok((left_joins, left_remaining))
+            },
+            BinaryOperator::Eq => {
+                // Check if this is a join condition (equality between columns from different tables)
+                let left_refs = (
+                    expr_refers_to_table(left, &tbl_left.name),
+                    expr_refers_to_table(left, &tbl_right.name),
+                );
+                let right_refs = (
+                    expr_refers_to_table(right, &tbl_left.name),
+                    expr_refers_to_table(right, &tbl_right.name),
+                );
+
+                // Check if this is a join condition: one side references left table, other references right table
+                let is_join_condition = match (left_refs, right_refs) {
+                    // Standard: left expr → left table, right expr → right table
+                    ((true, false), (false, true)) => true,
+                    // Reversed: left expr → right table, right expr → left table
+                    ((false, true), (true, false)) => true,
+                    _ => {
+                        // Also check using schema-based resolution for unqualified columns
+                        let left_expr = parse_sql_expr(left, ctx, Some(join_schema)).ok();
+                        let right_expr = parse_sql_expr(right, ctx, Some(join_schema)).ok();
+                        
+                        if let (Some(left_e), Some(right_e)) = (left_expr, right_expr) {
+                            let left_in_left = expr_cols_all_in_schema(&left_e, &tbl_left.schema);
+                            let left_in_right = expr_cols_all_in_schema(&left_e, &tbl_right.schema);
+                            let right_in_left = expr_cols_all_in_schema(&right_e, &tbl_left.schema);
+                            let right_in_right = expr_cols_all_in_schema(&right_e, &tbl_right.schema);
+                            
+                            // One expression in left table only, other in right table only
+                            (left_in_left && !left_in_right && !right_in_left && right_in_right)
+                                || (!left_in_left && left_in_right && right_in_left && !right_in_right)
+                        } else {
+                            false
+                        }
+                    },
+                };
+
+                if is_join_condition {
+                    // This is a join condition - extract it
+                    let (left_on, right_on) = determine_left_right_join_on(
+                        ctx, left, right, tbl_left, tbl_right, join_schema,
+                    )?;
+                    // For now, we only support single-column join conditions in implicit joins
+                    if left_on.len() == 1 && right_on.len() == 1 {
+                        Ok((vec![(left_on[0].clone(), right_on[0].clone())], vec![]))
+                    } else {
+                        // Multiple columns - treat as filter for now
+                        Ok((vec![], vec![expr.clone()]))
+                    }
+                } else {
+                    // Not a join condition - keep as filter
+                    Ok((vec![], vec![expr.clone()]))
+                }
+            },
+            _ => {
+                // Other operators - keep as filter
+                Ok((vec![], vec![expr.clone()]))
+            },
+        },
+        SQLExpr::Nested(inner) => {
+            extract_join_conditions_recursive(inner, tbl_left, tbl_right, join_schema, ctx)
+        },
+        _ => {
+            // Other expressions - keep as filter
+            Ok((vec![], vec![expr.clone()]))
+        },
     }
 }
 
