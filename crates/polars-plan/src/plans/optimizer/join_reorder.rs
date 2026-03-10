@@ -47,9 +47,7 @@ impl JoinReorder {
                 let (known, estimated) = file_info.row_estimation;
                 known.unwrap_or(estimated)
             },
-            IR::Filter { input, .. } => {
-                Self::estimate_rows(*input, ir_arena).saturating_div(2)
-            },
+            IR::Filter { input, .. } => Self::estimate_rows(*input, ir_arena).saturating_div(2),
             IR::Slice { len, .. } => *len as usize,
             other => other
                 .inputs()
@@ -196,9 +194,7 @@ impl OptimizationRule for JoinReorder {
         let original_schema = lp_arena.get(node).schema(lp_arena).into_owned();
         let base_schema = lp_arena.get(base_node).schema(lp_arena).into_owned();
 
-        let Some((order, schemas)) =
-            Self::greedy_order(base_schema, &entries, expr_arena)?
-        else {
+        let Some((order, schemas)) = Self::greedy_order(base_schema, &entries, expr_arena)? else {
             return Ok(None);
         };
 
@@ -309,27 +305,45 @@ mod tests {
         let sb = Arc::new(schema_b);
         let sc = Arc::new(schema_c);
 
-        let inner_schema =
-            det_join_schema(&sa, &sb, &[col_expr("b_key", &mut expr_arena)], &[col_expr("b_key", &mut expr_arena)], &options, &expr_arena).unwrap();
+        let inner_schema = det_join_schema(
+            &sa,
+            &sb,
+            &[col_expr("b_key", &mut expr_arena)],
+            &[col_expr("b_key", &mut expr_arena)],
+            &options,
+            &expr_arena,
+        )
+        .unwrap();
         let inner_node = ir_arena.add(IR::Join {
-            input_left: a, input_right: b,
+            input_left: a,
+            input_right: b,
             schema: inner_schema.clone(),
             left_on: vec![col_expr("b_key", &mut expr_arena)],
             right_on: vec![col_expr("b_key", &mut expr_arena)],
             options: Arc::clone(&options),
         });
 
-        let outer_schema =
-            det_join_schema(&inner_schema, &sc, &[col_expr("c_key", &mut expr_arena)], &[col_expr("c_key", &mut expr_arena)], &options, &expr_arena).unwrap();
+        let outer_schema = det_join_schema(
+            &inner_schema,
+            &sc,
+            &[col_expr("c_key", &mut expr_arena)],
+            &[col_expr("c_key", &mut expr_arena)],
+            &options,
+            &expr_arena,
+        )
+        .unwrap();
         let outer_node = ir_arena.add(IR::Join {
-            input_left: inner_node, input_right: c,
+            input_left: inner_node,
+            input_right: c,
             schema: Arc::clone(&outer_schema),
             left_on: vec![col_expr("c_key", &mut expr_arena)],
             right_on: vec![col_expr("c_key", &mut expr_arena)],
             options: Arc::clone(&options),
         });
 
-        let result = JoinReorder.optimize_plan(&mut ir_arena, &mut expr_arena, outer_node).unwrap();
+        let result = JoinReorder
+            .optimize_plan(&mut ir_arena, &mut expr_arena, outer_node)
+            .unwrap();
 
         let IR::SimpleProjection { input, columns } = result.unwrap() else {
             panic!("expected SimpleProjection");
@@ -340,13 +354,23 @@ mod tests {
         );
 
         // New outer join should have B as right input.
-        let IR::Join { input_right: new_b, input_left: new_inner, .. } = ir_arena.get(input) else {
+        let IR::Join {
+            input_right: new_b,
+            input_left: new_inner,
+            ..
+        } = ir_arena.get(input)
+        else {
             panic!("expected outer Join");
         };
         assert_eq!(*new_b, b);
 
         // New inner join should have C as right input.
-        let IR::Join { input_left: new_a, input_right: new_c, .. } = ir_arena.get(*new_inner) else {
+        let IR::Join {
+            input_left: new_a,
+            input_right: new_c,
+            ..
+        } = ir_arena.get(*new_inner)
+        else {
             panic!("expected inner Join");
         };
         assert_eq!(*new_a, a);
@@ -383,26 +407,45 @@ mod tests {
         let sb = Arc::new(schema_b);
         let sc = Arc::new(schema_c);
 
-        let inner_schema =
-            det_join_schema(&sa, &sb, &[col_expr("b_key", &mut expr_arena)], &[col_expr("b_key", &mut expr_arena)], &options, &expr_arena).unwrap();
+        let inner_schema = det_join_schema(
+            &sa,
+            &sb,
+            &[col_expr("b_key", &mut expr_arena)],
+            &[col_expr("b_key", &mut expr_arena)],
+            &options,
+            &expr_arena,
+        )
+        .unwrap();
         let inner_node = ir_arena.add(IR::Join {
-            input_left: a, input_right: b, schema: inner_schema.clone(),
+            input_left: a,
+            input_right: b,
+            schema: inner_schema.clone(),
             left_on: vec![col_expr("b_key", &mut expr_arena)],
             right_on: vec![col_expr("b_key", &mut expr_arena)],
             options: Arc::clone(&options),
         });
 
-        let outer_schema =
-            det_join_schema(&inner_schema, &sc, &[col_expr("c_key", &mut expr_arena)], &[col_expr("c_key", &mut expr_arena)], &options, &expr_arena).unwrap();
+        let outer_schema = det_join_schema(
+            &inner_schema,
+            &sc,
+            &[col_expr("c_key", &mut expr_arena)],
+            &[col_expr("c_key", &mut expr_arena)],
+            &options,
+            &expr_arena,
+        )
+        .unwrap();
         let outer_node = ir_arena.add(IR::Join {
-            input_left: inner_node, input_right: c,
+            input_left: inner_node,
+            input_right: c,
             schema: outer_schema,
             left_on: vec![col_expr("c_key", &mut expr_arena)],
             right_on: vec![col_expr("c_key", &mut expr_arena)],
             options,
         });
 
-        let result = JoinReorder.optimize_plan(&mut ir_arena, &mut expr_arena, outer_node).unwrap();
+        let result = JoinReorder
+            .optimize_plan(&mut ir_arena, &mut expr_arena, outer_node)
+            .unwrap();
         assert!(result.is_none(), "no reorder needed when already optimal");
     }
 
@@ -440,18 +483,27 @@ mod tests {
 
         let mut left = base;
         let mut left_schema = sb.clone();
-        let chain = [("k1", t1, 1_000usize), ("k2", t2, 500), ("k3", t3, 10), ("k4", t4, 5)];
+        let chain = [
+            ("k1", t1, 1_000usize),
+            ("k2", t2, 500),
+            ("k3", t3, 10),
+            ("k4", t4, 5),
+        ];
 
         for (key, right, _rows) in &chain {
             let right_schema = ir_arena.get(*right).schema(&ir_arena).into_owned();
             let join_schema = det_join_schema(
-                &left_schema, &right_schema,
+                &left_schema,
+                &right_schema,
                 &[col_expr(key, &mut expr_arena)],
                 &[col_expr(key, &mut expr_arena)],
-                &options, &expr_arena,
-            ).unwrap();
+                &options,
+                &expr_arena,
+            )
+            .unwrap();
             left = ir_arena.add(IR::Join {
-                input_left: left, input_right: *right,
+                input_left: left,
+                input_right: *right,
                 schema: join_schema.clone(),
                 left_on: vec![col_expr(key, &mut expr_arena)],
                 right_on: vec![col_expr(key, &mut expr_arena)],
@@ -462,8 +514,14 @@ mod tests {
         let root = left;
         let original_schema = ir_arena.get(root).schema(&ir_arena).into_owned();
 
-        let result = JoinReorder.optimize_plan(&mut ir_arena, &mut expr_arena, root).unwrap();
-        let IR::SimpleProjection { input: new_root, columns } = result.unwrap() else {
+        let result = JoinReorder
+            .optimize_plan(&mut ir_arena, &mut expr_arena, root)
+            .unwrap();
+        let IR::SimpleProjection {
+            input: new_root,
+            columns,
+        } = result.unwrap()
+        else {
             panic!("expected SimpleProjection");
         };
 
@@ -477,15 +535,25 @@ mod tests {
         let mut rights = Vec::new();
         let mut cur = new_root;
         loop {
-            let IR::Join { input_left, input_right, .. } = ir_arena.get(cur) else { break };
+            let IR::Join {
+                input_left,
+                input_right,
+                ..
+            } = ir_arena.get(cur)
+            else {
+                break;
+            };
             rights.push(*input_right);
             cur = *input_left;
         }
         rights.reverse(); // now innermost-first
 
         // Expected order by ascending row count: t4(5), t3(10), t2(500), t1(1000)
-        assert_eq!(rights, vec![t4, t3, t2, t1],
-            "tables should be joined in ascending row-count order");
+        assert_eq!(
+            rights,
+            vec![t4, t3, t2, t1],
+            "tables should be joined in ascending row-count order"
+        );
     }
 
     /// A table whose left_on key was introduced by a previous right-side join
@@ -524,10 +592,18 @@ mod tests {
         let sc = Arc::new(c_schema);
 
         // base JOIN B on b_key
-        let inner_schema =
-            det_join_schema(&sb, &sbb, &[col_expr("b_key", &mut expr_arena)], &[col_expr("b_key", &mut expr_arena)], &options, &expr_arena).unwrap();
+        let inner_schema = det_join_schema(
+            &sb,
+            &sbb,
+            &[col_expr("b_key", &mut expr_arena)],
+            &[col_expr("b_key", &mut expr_arena)],
+            &options,
+            &expr_arena,
+        )
+        .unwrap();
         let inner_node = ir_arena.add(IR::Join {
-            input_left: base, input_right: b,
+            input_left: base,
+            input_right: b,
             schema: inner_schema.clone(),
             left_on: vec![col_expr("b_key", &mut expr_arena)],
             right_on: vec![col_expr("b_key", &mut expr_arena)],
@@ -535,18 +611,31 @@ mod tests {
         });
 
         // (base JOIN B) JOIN C on c_key  — c_key comes from B
-        let outer_schema =
-            det_join_schema(&inner_schema, &sc, &[col_expr("c_key", &mut expr_arena)], &[col_expr("c_key", &mut expr_arena)], &options, &expr_arena).unwrap();
+        let outer_schema = det_join_schema(
+            &inner_schema,
+            &sc,
+            &[col_expr("c_key", &mut expr_arena)],
+            &[col_expr("c_key", &mut expr_arena)],
+            &options,
+            &expr_arena,
+        )
+        .unwrap();
         let outer_node = ir_arena.add(IR::Join {
-            input_left: inner_node, input_right: c,
+            input_left: inner_node,
+            input_right: c,
             schema: outer_schema,
             left_on: vec![col_expr("c_key", &mut expr_arena)],
             right_on: vec![col_expr("c_key", &mut expr_arena)],
             options,
         });
 
-        let result = JoinReorder.optimize_plan(&mut ir_arena, &mut expr_arena, outer_node).unwrap();
+        let result = JoinReorder
+            .optimize_plan(&mut ir_arena, &mut expr_arena, outer_node)
+            .unwrap();
         // Dependency prevents moving C before B, so order is unchanged → no rewrite.
-        assert!(result.is_none(), "dependency on B must prevent C from being moved first");
+        assert!(
+            result.is_none(),
+            "dependency on B must prevent C from being moved first"
+        );
     }
 }

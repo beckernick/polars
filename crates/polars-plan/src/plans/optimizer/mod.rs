@@ -9,12 +9,12 @@ mod cluster_with_columns;
 mod collapse_and_project;
 mod collect_members;
 mod count_star;
-mod join_reorder;
 #[cfg(feature = "cse")]
 mod cse;
 mod flatten_union;
 #[cfg(feature = "fused")]
 mod fused;
+mod join_reorder;
 mod join_utils;
 pub(crate) use join_utils::ExprOrigin;
 mod expand_datasets;
@@ -33,8 +33,8 @@ use collapse_and_project::SimpleProjectionAndCollapse;
 #[cfg(feature = "cse")]
 pub use cse::NaiveExprMerger;
 use delay_rechunk::DelayRechunk;
-use join_reorder::JoinReorder;
 pub use expand_datasets::ExpandedDataset;
+use join_reorder::JoinReorder;
 use polars_core::config::verbose;
 pub use predicate_pushdown::{DynamicPred, PredicateExpr, PredicatePushDown, TrivialPredicateExpr};
 pub use projection_pushdown::ProjectionPushDown;
