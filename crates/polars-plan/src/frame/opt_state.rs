@@ -37,6 +37,8 @@ bitflags! {
         /// Check if operations are order dependent and unset maintaining_order if
         /// the order would not be observed.
         const CHECK_ORDER_OBSERVE = 1 << 15;
+        /// Reorder inner joins to minimise the size of intermediate results.
+        const JOIN_REORDER = 1 << 16;
     }
 }
 
@@ -71,6 +73,10 @@ impl OptFlags {
     }
     pub fn fast_projection(&self) -> bool {
         self.contains(OptFlags::FAST_PROJECTION)
+    }
+
+    pub fn join_reorder(&self) -> bool {
+        self.contains(OptFlags::JOIN_REORDER)
     }
 }
 

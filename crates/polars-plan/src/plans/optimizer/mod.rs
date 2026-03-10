@@ -9,6 +9,7 @@ mod cluster_with_columns;
 mod collapse_and_project;
 mod collect_members;
 mod count_star;
+mod join_reorder;
 #[cfg(feature = "cse")]
 mod cse;
 mod flatten_union;
@@ -32,6 +33,7 @@ use collapse_and_project::SimpleProjectionAndCollapse;
 #[cfg(feature = "cse")]
 pub use cse::NaiveExprMerger;
 use delay_rechunk::DelayRechunk;
+use join_reorder::JoinReorder;
 pub use expand_datasets::ExpandedDataset;
 use polars_core::config::verbose;
 pub use predicate_pushdown::{DynamicPred, PredicateExpr, PredicatePushDown, TrivialPredicateExpr};
@@ -226,6 +228,10 @@ pub fn optimize(
         rules.push(Box::new(SimpleProjectionAndCollapse::new(
             opt_flags.eager(),
         )));
+    }
+
+    if opt_flags.join_reorder() && !opt_flags.eager() {
+        rules.push(Box::new(JoinReorder));
     }
 
     if !opt_flags.eager() {

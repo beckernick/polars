@@ -43,6 +43,7 @@ class QueryOptFlags:
         collapse_joins: None | bool = None,
         check_order_observe: None | bool = None,
         fast_projection: None | bool = None,
+        join_reorder: None | bool = None,
     ) -> None:
         self._pyoptflags = PyOptFlags.default()
         self.update(
@@ -56,6 +57,7 @@ class QueryOptFlags:
             collapse_joins=collapse_joins,
             check_order_observe=check_order_observe,
             fast_projection=fast_projection,
+            join_reorder=join_reorder,
         )
 
     @classmethod
@@ -77,6 +79,7 @@ class QueryOptFlags:
         collapse_joins: None | bool = None,
         check_order_observe: None | bool = None,
         fast_projection: None | bool = None,
+        join_reorder: None | bool = None,
     ) -> QueryOptFlags:
         """Create new empty set off optimizations."""
         optflags = QueryOptFlags()
@@ -92,6 +95,7 @@ class QueryOptFlags:
             collapse_joins=collapse_joins,
             check_order_observe=check_order_observe,
             fast_projection=fast_projection,
+            join_reorder=join_reorder,
         )
 
     def update(
@@ -107,6 +111,7 @@ class QueryOptFlags:
         collapse_joins: None | bool = None,
         check_order_observe: None | bool = None,
         fast_projection: None | bool = None,
+        join_reorder: None | bool = None,
     ) -> QueryOptFlags:
         """Update the current optimization flags."""
         if predicate_pushdown is not None:
@@ -135,6 +140,8 @@ class QueryOptFlags:
             self.check_order_observe = check_order_observe
         if fast_projection is not None:
             self.fast_projection = fast_projection
+        if join_reorder is not None:
+            self.join_reorder = join_reorder
 
         return self
 
@@ -238,6 +245,15 @@ class QueryOptFlags:
     def fast_projection(self, value: bool) -> None:
         self._pyoptflags.fast_projection = value
 
+    @property
+    def join_reorder(self) -> bool:
+        """Reorder inner joins to minimise the size of intermediate results."""
+        return self._pyoptflags.join_reorder
+
+    @join_reorder.setter
+    def join_reorder(self, value: bool) -> None:
+        self._pyoptflags.join_reorder = value
+
     def __str__(self) -> str:
         return f"""
 QueryOptFlags {{
@@ -253,6 +269,7 @@ QueryOptFlags {{
     cluster_with_columns: {self.cluster_with_columns}
     check_order_observe: {self.check_order_observe}
     fast_projection: {self.fast_projection}
+    join_reorder: {self.join_reorder}
 
     eager: {self._pyoptflags.eager}
     streaming: {self._pyoptflags.streaming}
