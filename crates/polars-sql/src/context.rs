@@ -1590,7 +1590,16 @@ impl SQLContext {
             lf = if invert_filter {
                 lf.remove(filter_expression)
             } else {
-                lf.filter(filter_expression)
+                // Split top-level AND conjuncts into separate filter calls so that the
+                // predicate pushdown optimizer can push each conjunct independently through
+                // joins. Without splitting, a combined `WHERE a AND b` becomes a single
+                // Filter node whose predicate references columns from both sides of a join,
+                // causing the optimizer to keep the entire filter above the join instead of
+                // pushing each part down to its respective input.
+                for conjunct in split_conjunction(filter_expression) {
+                    lf = lf.filter(conjunct);
+                }
+                lf
             };
         }
         Ok(lf)
@@ -2168,7 +2177,9 @@ impl SQLContext {
         // Apply HAVING filter after aggregation
         let mut aggregated = lf.group_by(group_by_keys).agg(&aggregation_projection);
         if let Some(filter_expr) = having_filter {
-            aggregated = aggregated.filter(filter_expr);
+            for conjunct in split_conjunction(filter_expr) {
+                aggregated = aggregated.filter(conjunct);
+            }
         }
 
         let projection_schema =
@@ -2807,4 +2818,35 @@ impl ExprSqlProjectionHeightBehavior {
             Self::InheritsContext
         }
     }
+}
+
+/// Flatten a tree of top-level AND conjuncts into a `Vec` of individual expressions.
+///
+/// The predicate pushdown optimizer assumes that AND-combined predicates have already
+/// been split into separate IR `Filter` nodes (see the comment in
+/// `polars-plan/src/plans/optimizer/predicate_pushdown/mod.rs`). When the SQL
+/// interface builds a `WHERE a AND b AND c` clause it produces a single combined
+/// expression; calling this function and filtering once per conjunct gives the
+/// optimizer the individual nodes it needs to push each predicate independently
+/// through joins.
+///
+/// Only `Operator::And` and `Operator::LogicalAnd` are split; `OR` and all other
+/// operators are left intact so that `WHERE (a OR b) AND c` correctly yields two
+/// conjuncts: `(a OR b)` and `c`.
+fn split_conjunction(expr: Expr) -> Vec<Expr> {
+    let mut stack = vec![expr];
+    let mut out = vec![];
+    while let Some(mut top) = stack.pop() {
+        while let Expr::BinaryExpr {
+            left,
+            op: Operator::And | Operator::LogicalAnd,
+            right,
+        } = top
+        {
+            stack.push(Arc::unwrap_or_clone(right));
+            top = Arc::unwrap_or_clone(left);
+        }
+        out.push(top);
+    }
+    out
 }
